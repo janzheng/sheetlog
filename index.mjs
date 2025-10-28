@@ -5,12 +5,14 @@ class Sheetlog {
     this.contentType = 'application/json';
     this.sheet = sheet ?? "Logs";
     this.method = method ?? "POST";
-    this.SHEET_URL = sheetUrl;
-
-    if (typeof process !== 'undefined') {
+    
+    // If sheetUrl is provided, use it. Otherwise, try to load from environment
+    if (sheetUrl) {
+      this.SHEET_URL = sheetUrl;
+    } else if (typeof Deno !== 'undefined' || typeof process !== 'undefined') {
       this.loadDotenv();
     } else {
-      this.contentType = 'application/json';
+      this.SHEET_URL = undefined;
       if (this.loud) {
         console.log('Browser mode: set a custom sheetUrl');
       }
@@ -19,9 +21,16 @@ class Sheetlog {
 
   loadDotenv() {
     try {
-      const { config } = require('dotenv');
-      config();
-      this.SHEET_URL = process.env['SHEET_URL'];
+      // For Deno
+      if (typeof Deno !== 'undefined') {
+        this.SHEET_URL = Deno.env.get('SHEET_URL');
+      } 
+      // For Node.js
+      else if (typeof process !== 'undefined') {
+        const { config } = require('dotenv');
+        config();
+        this.SHEET_URL = process.env['SHEET_URL'];
+      }
     } catch (error) {
       // console.warn('dotenv not found or failed to load. Proceeding without it.');
     }

@@ -1,5 +1,10 @@
 # Sheetlog
 
+[![NPM Version](https://img.shields.io/npm/v/@yawnxyz/sheetlog)](https://www.npmjs.com/package/@yawnxyz/sheetlog)
+[![JSR](https://jsr.io/badges/@yawnxyz/sheetlog)](https://jsr.io/@yawnxyz/sheetlog)
+
+> **⚠️ Breaking Change in v0.1.13:** Sheetlog now uses **named exports**. Update your imports from `import sheet from '@yawnxyz/sheetlog'` to `import { Sheetlog } from '@yawnxyz/sheetlog'`
+
 Sheetlog is a a logging system that turns any Google Sheet into a database.
 
 It's very helpful for logging console data, record form responses, or store LLM outputs for evaluation outputs.
@@ -17,39 +22,126 @@ Here's a [live demo and usage guide](https://sheetlog.deno.dev/)
 
 ## Installation
 
-1. Install package: `yarn add --dev @yawnxyz/sheetlog`
-2. Create a Google Sheet
-3. Follow the [installation instructions for SpreadAPI](https://spreadapi.roombelt.com/setup)
-4. Replace the default script with the custom script (`sheetlog.js`) in this repo
-5. Make sure to change the appropriate authentication for your app — the default is fully open.
-6. Deploy the app per installation instructions, and get the custom URL.
-7. Set that URL to .env.SHEET_URL to your deployed SpreadAPI Apps Script, or with `sheet.setup({sheetUrl: "some url"})`
-8. Create a new Google Sheets tab named "Logs"
-9. Now you can log any object to your sheet, with `sheet.log({some: "data"})` to your code, and it'll log to the `Logs` sheet!
+Sheetlog is available for both **Node.js/NPM** and **Deno/JSR** ecosystems.
+
+### For Node.js (NPM)
+
+```bash
+npm install @yawnxyz/sheetlog
+# or
+yarn add @yawnxyz/sheetlog
+```
+
+### For Deno (JSR)
+
+```bash
+deno add @yawnxyz/sheetlog
+# or import directly
+import { Sheetlog } from "jsr:@yawnxyz/sheetlog";
+```
+
+You can also use the NPM package in Deno:
+```typescript
+import { Sheetlog } from "npm:@yawnxyz/sheetlog";
+```
+
+### Google Sheets Setup
+
+1. Create a Google Sheet
+2. Follow the [installation instructions for SpreadAPI](https://spreadapi.roombelt.com/setup)
+3. Replace the default script with the custom script (`sheetlog.js`) in this repo
+4. Make sure to change the appropriate authentication for your app — the default is fully open.
+5. Deploy the app per installation instructions, and get the custom URL.
+6. Set that URL to `.env.SHEET_URL` to your deployed SpreadAPI Apps Script, or pass it directly in the constructor
+7. Create a new Google Sheets tab named "Logs"
+8. Now you can log any object to your sheet!
 
 ## Usage
 
 ### Quick Start
 
-To start logging data to your Google Sheet:
+**⚠️ Important: Sheetlog uses a named export!**
 
 ```javascript
-import sheet from '@yawnxyz/sheetlog';
+// ✅ Correct - Named import
+import { Sheetlog } from '@yawnxyz/sheetlog';
 
-// initialize the sheet
-const testSheet = new Sheetlog({
-  sheetUrl: "https://script.google.com/macros/s/AKfycbwVqIg9YzOSaa92I6z4Q9VBTSFeNUrT5GfmsWfNKqL9SU4ZQeZ2Rl1FfdE3cjrNqllV/exec",
+// ❌ Incorrect - Default import won't work
+// import sheet from '@yawnxyz/sheetlog';
+```
+
+#### For Node.js/NPM
+
+```javascript
+import { Sheetlog } from '@yawnxyz/sheetlog';
+
+// Initialize the sheet logger
+const logger = new Sheetlog({
+  sheetUrl: "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec",
+  sheet: "testSheet"  // Optional, defaults to "Logs"
+});
+
+// Log data to your sheet
+const result = await logger.log({
+  Name: "John Doe",
+  Email: "john@example.com"
+});
+```
+
+#### For Deno
+
+```typescript
+import { Sheetlog } from "jsr:@yawnxyz/sheetlog";
+// or: import { Sheetlog } from "npm:@yawnxyz/sheetlog";
+
+const logger = new Sheetlog({
+  sheetUrl: "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec",
   sheet: "testSheet"
 });
 
-let result = await testSheet.log({
-  Name: "test"
-})
+const result = await logger.log({
+  Name: "Jane Doe",
+  Email: "jane@example.com"
+});
+```
 
+#### Using Environment Variables
+
+You can also set the sheet URL via environment variables:
+
+**Node.js** (`.env` file):
+```bash
+SHEET_URL=https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec
+```
+
+**Deno** (set in shell or use `--env` flag):
+```bash
+export SHEET_URL=https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec
+```
+
+Then initialize without the URL:
+```javascript
+import { Sheetlog } from '@yawnxyz/sheetlog';
+
+const logger = new Sheetlog({
+  sheet: "testSheet"  // Will use SHEET_URL from environment
+});
 ```
 
 This adds the data to the `Name` column of the `testSheet`. 
 
+
+### Import Note
+
+**Sheetlog uses named exports.** Always import using:
+```javascript
+import { Sheetlog } from '@yawnxyz/sheetlog';
+```
+
+The package also exports `SheetlogSchema` for type validation if needed:
+```javascript
+import { Sheetlog, SheetlogSchema } from '@yawnxyz/sheetlog';
+```
 
 ### Basic Methods
 
@@ -70,8 +162,14 @@ The `.log` function is the core method used to interact with the sheet. It accep
 
 Example:
 ```javascript
+import { Sheetlog } from '@yawnxyz/sheetlog';
+
+const logger = new Sheetlog({
+  sheetUrl: "YOUR_SHEET_URL"
+});
+
 const payload = { name: 'John', age: 30 };
-await sheet.log(payload, { 
+await logger.log(payload, { 
   sheet: 'Users'
 });
 ```
@@ -81,14 +179,17 @@ Retrieves data from the sheet. Can fetch single rows or multiple with pagination
 
 Example of single row:
 ```javascript
+import { Sheetlog } from '@yawnxyz/sheetlog';
+const logger = new Sheetlog({ sheetUrl: "YOUR_SHEET_URL" });
+
 // Get row with ID 123
-const row = await sheet.get(123);
+const row = await logger.get(123);
 ```
 
 Example of multiple rows:
 ```javascript
 // Get multiple rows with options
-const rows = await sheet.get(null, {
+const rows = await logger.get(null, {
   method: "GET",
   limit: 10,
   start_id: 100,
@@ -100,7 +201,10 @@ const rows = await sheet.get(null, {
 Creates new rows in the sheet. Automatically adds timestamp in "Date Modified" column.
 
 ```javascript
-const result = await sheet.post({ 
+import { Sheetlog } from '@yawnxyz/sheetlog';
+const logger = new Sheetlog({ sheetUrl: "YOUR_SHEET_URL" });
+
+const result = await logger.post({ 
   name: 'Jane',
   email: 'jane@example.com'
 }, {
@@ -112,7 +216,10 @@ const result = await sheet.post({
 Updates existing row or creates new one if not found. Uses specified column as unique identifier.
 
 ```javascript
-const result = await sheet.upsert(
+import { Sheetlog } from '@yawnxyz/sheetlog';
+const logger = new Sheetlog({ sheetUrl: "YOUR_SHEET_URL" });
+
+const result = await logger.upsert(
   'email',                    // idColumn
   'jane@example.com',        // id
   { status: 'active' },      // payload
@@ -854,3 +961,22 @@ const result = await sheet.bulkDelete([1, 2, 3, 4], {
   sheet: "Users"
 });
 ```
+
+## Changelog
+
+### v0.1.13 (2024)
+- **Breaking Change**: Switched from default export to named export
+  - Old: `import sheet from '@yawnxyz/sheetlog'`
+  - New: `import { Sheetlog } from '@yawnxyz/sheetlog'`
+- Added full Deno/JSR support
+- Fixed constructor logic to properly handle `sheetUrl` parameter
+- Added support for both `Deno.env` and `process.env` for environment variables
+- Updated `package.json` to use `"type": "module"` for better ES module support
+- Added proper exports configuration for modern bundlers
+- Both Node.js and Deno environments now fully tested and supported
+
+### v0.1.12 and earlier
+- Initial releases with Google Sheets logging functionality
+- Full CRUD operations support
+- Authentication and permissions system
+- Multiple data retrieval methods

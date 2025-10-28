@@ -35,13 +35,13 @@
 
 
 // Configuration flag for automatic timestamp updating
-const ENABLE_AUTO_TIMESTAMPS = false;
+const ENABLE_AUTO_TIMESTAMPS = true;
 
 
 class SheetlogScript {
   constructor(config = {}) {
     this.users = [];
-    
+
     // Initialize with default anonymous access if no config provided
     if (Object.keys(config).length === 0) {
       // this.addUser("anonymous", this.UNSAFE(""), this.ALL());
@@ -119,8 +119,8 @@ class SheetlogScript {
     console.log("users: ", this.users);
 
     if (!this.hasAccess(key, sheetName, method)) {
-      return this.error(401, "unauthorized!", { 
-        users: this.users, 
+      return this.error(401, "unauthorized!", {
+        users: this.users,
         getUserWithKey: this.getUserWithKey(key),
         getPermissions: this.getPermissions(this.getUserWithKey(key), sheetName) || "no permissions??",
         hasAccess: this.hasAccess(key, sheetName, method),
@@ -267,7 +267,7 @@ class SheetlogScript {
   handlePost(sheet, payload) {
     const headers = this.getHeaders(sheet);
     let row = this.mapObjectToRow(payload, headers);
-    
+
     // Only add timestamp if "Date Modified" column exists
     if (headers[0] === "Date Modified") {
       const currentDate = new Date();
@@ -379,7 +379,7 @@ class SheetlogScript {
       if (options.partialUpdate) {
         // Update only specified columns
         sheet.getRange(foundRow, 1).setValue(formattedDate); // Always update timestamp
-        
+
         Object.entries(payload).forEach(([key, value]) => {
           const colIndex = headers.indexOf(key);
           if (colIndex !== -1) {
@@ -470,20 +470,78 @@ class SheetlogScript {
     }
 
     const lastRow = sheet.getLastRow();
-    const matches = [];
-    for (let i = 2; i <= lastRow; i++) {
-      const cellValue = sheet.getRange(i, idColumnIndex).getValue();
-      if (cellValue.toString() === id.toString()) {
-        const rowData = sheet.getRange(i, 1, 1, sheet.getLastColumn()).getValues()[0];
-        const result = this.mapRowToObject(rowData, i, headers);
-        matches.push(result);
+    if (lastRow < 2) {
+      return this.error(404, "no_matches_found", {});
+    }
+
+    // OPTIMIZATION: Read ONLY the ID column first
+    const idColumnValues = sheet.getRange(2, idColumnIndex, lastRow - 1, 1)
+      .getValues()
+      .map(row => row[0]); // Flatten to 1D array
+
+    // Find matching row indices in memory - START FROM THE END
+    const matchingRowIndices = [];
+    const searchStr = id.toString();
+    const searchNum = Number(id);
+    const isNumericSearch = !isNaN(searchNum) && id !== '';
+
+    // SEARCH BACKWARDS - from last row to first
+    for (let i = idColumnValues.length - 1; i >= 0; i--) {
+      const cellValue = idColumnValues[i];
+
+      // Check both numeric and string equality
+      if (cellValue === searchNum ||
+        cellValue === searchStr ||
+        cellValue.toString() === searchStr) {
+        matchingRowIndices.push(i + 2); // +2 because we start at row 2
         if (!returnAllMatches) break;
       }
     }
 
-    if (matches.length === 0) {
+    if (matchingRowIndices.length === 0) {
       return this.error(404, "no_matches_found", {});
-    } else if (matches.length === 1 && !returnAllMatches) {
+    }
+
+    // Reverse the indices if returning all matches (so they're in original order)
+    if (returnAllMatches && matchingRowIndices.length > 1) {
+      matchingRowIndices.reverse();
+    }
+
+    // Now fetch ONLY the rows we need
+    const lastColumn = sheet.getLastColumn();
+    const matches = [];
+
+    // Batch read if multiple rows
+    if (matchingRowIndices.length > 1 && returnAllMatches) {
+      // For multiple rows, it might be more efficient to read them in one batch
+      // if they're close together
+      const minRow = Math.min(...matchingRowIndices);
+      const maxRow = Math.max(...matchingRowIndices);
+
+      if (maxRow - minRow < 100) {
+        // Rows are close together, read the range
+        const rangeData = sheet.getRange(minRow, 1, maxRow - minRow + 1, lastColumn).getValues();
+
+        matchingRowIndices.forEach(rowIndex => {
+          const dataIndex = rowIndex - minRow;
+          matches.push(this.mapRowToObject(rangeData[dataIndex], rowIndex, headers));
+        });
+      } else {
+        // Rows are spread out, read individually
+        matchingRowIndices.forEach(rowIndex => {
+          const rowData = sheet.getRange(rowIndex, 1, 1, lastColumn).getValues()[0];
+          matches.push(this.mapRowToObject(rowData, rowIndex, headers));
+        });
+      }
+    } else {
+      // Single row
+      const rowIndex = matchingRowIndices[0];
+      const rowData = sheet.getRange(rowIndex, 1, 1, lastColumn).getValues()[0];
+      matches.push(this.mapRowToObject(rowData, rowIndex, headers));
+    }
+
+    // Return results
+    if (!returnAllMatches && matches.length === 1) {
       return this.data(200, matches[0]);
     } else {
       return this.data(200, matches);
@@ -495,11 +553,11 @@ class SheetlogScript {
     if (!Array.isArray(ids)) {
       return this.error(400, "invalid_ids", { message: "ids must be an array" });
     }
-    
+
     ids.forEach(_id => {
       sheet.getRange(_id, 1, 1, sheet.getLastColumn()).clearContent();
     });
-    
+
     return this.data(200, { deleted: ids.length });
   }
 
@@ -507,27 +565,27 @@ class SheetlogScript {
     const { cursor, limit = 10, sortBy = 'Date Modified', sortDir = 'desc' } = params;
     const headers = this.getHeaders(sheet);
     const sortColIndex = headers.indexOf(sortBy) + 1;
-    
+
     if (sortColIndex < 1) {
       return this.error(400, "sort_column_not_found", { sortBy });
     }
-    
+
     const lastRow = sheet.getLastRow();
     let startRow = cursor ? parseInt(cursor) : 2;
     let rows = [];
-    
+
     // Get one more than limit to determine if there are more pages
     const range = sheet.getRange(startRow, 1, Math.min(limit + 1, lastRow - startRow + 1), sheet.getLastColumn());
     rows = range.getValues()
       .map((row, idx) => this.mapRowToObject(row, startRow + idx, headers))
       .filter(this.isTruthy);
-      
+
     const hasMore = rows.length > limit;
     if (hasMore) rows.pop();
-    
+
     const nextCursor = hasMore ? startRow + limit : null;
-    
-    return this.data(200, rows, { 
+
+    return this.data(200, rows, {
       cursor: nextCursor,
       hasMore
     });
@@ -540,8 +598,8 @@ class SheetlogScript {
       .getValues()
       .map(row => this.mapRowToObject(row, null, headers))
       .filter(this.isTruthy);
-      
-    switch(format.toLowerCase()) {
+
+    switch (format.toLowerCase()) {
       case 'json':
         return this.data(200, data);
       case 'csv':
@@ -559,18 +617,18 @@ class SheetlogScript {
     const { column, operation, where } = params;
     const headers = this.getHeaders(sheet);
     const colIndex = headers.indexOf(column) + 1;
-    
+
     if (colIndex < 1) {
       return this.error(400, "column_not_found", { column });
     }
-    
+
     const values = sheet.getRange(2, colIndex, sheet.getLastRow() - 1, 1)
       .getValues()
       .map(row => row[0])
       .filter(val => typeof val === 'number');
-      
+
     let result;
-    switch(operation) {
+    switch (operation) {
       case 'sum':
         result = values.reduce((a, b) => a + b, 0);
         break;
@@ -589,7 +647,7 @@ class SheetlogScript {
       default:
         return this.error(400, "invalid_operation", { operation });
     }
-    
+
     return this.data(200, { result });
   }
 
@@ -597,14 +655,14 @@ class SheetlogScript {
     const headers = this.getHeaders(sheet);
     const currentDate = new Date();
     const formattedDate = Utilities.formatDate(currentDate, Session.getScriptTimeZone(), "MM/dd/yyyy HH:mm:ss");
-    
+
     updates.forEach(update => {
       const { _id, ...data } = update;
       if (!_id) return;
-      
+
       // Update timestamp
       sheet.getRange(_id, 1).setValue(formattedDate);
-      
+
       // Update fields
       for (const [key, value] of Object.entries(data)) {
         const idx = headers.indexOf(key);
@@ -612,7 +670,7 @@ class SheetlogScript {
         sheet.getRange(_id, idx + 1).setValue(value);
       }
     });
-    
+
     return this.data(200, { updated: updates.length });
   }
 
@@ -620,32 +678,32 @@ class SheetlogScript {
     const startRow = parseInt(params.startRow, 10);
     const endRow = params.endRow ? parseInt(params.endRow, 10) : startRow;
     const { includeFormulas = false } = params;
-    
+
     const rows = {
       values: this.getRows(sheet, startRow, endRow)
     };
-    
+
     // Add formulas if requested
     if (includeFormulas) {
       rows.formulas = sheet.getRange(
-        startRow, 
-        1, 
-        endRow - startRow + 1, 
+        startRow,
+        1,
+        endRow - startRow + 1,
         sheet.getLastColumn()
       ).getFormulas();
     }
-    
+
     return this.data(200, rows);
   }
 
   handleGetColumns(sheet, params) {
-    const { 
-      startColumn: startIdentifier, 
+    const {
+      startColumn: startIdentifier,
       endColumn: endIdentifier = startIdentifier,
       includeFormulas = false,
       includeFormatting = false
     } = params;
-    
+
     const columns = this.getColumns(sheet, startIdentifier, endIdentifier, {
       includeFormulas,
       includeFormatting
@@ -669,16 +727,16 @@ class SheetlogScript {
 
     // Convert endIdentifier to index and clamp to lastColumn
     const endIndex = Math.min(this.getColumnIndex(endIdentifier), lastColumn);
-    
+
     // If startIndex is now greater than adjusted endIndex, return empty
     if (startIndex > endIndex) {
       return [];
     }
 
     const range = sheet.getRange(
-      1, 
-      startIndex, 
-      sheet.getLastRow(), 
+      1,
+      startIndex,
+      sheet.getLastRow(),
       endIndex - startIndex + 1
     );
 
@@ -728,18 +786,18 @@ class SheetlogScript {
   }
 
   handleGetAllCells(sheet, params = {}) {
-    const { 
+    const {
       includeFormulas = true,  // true by default for getAllCells
       includeFormatting = true // true by default for getAllCells
     } = params;
 
     const data = this.getAllCells(sheet);
-    
+
     // Remove unwanted properties based on parameters
     if (!includeFormulas) {
       delete data.formulas;
     }
-    
+
     if (!includeFormatting) {
       delete data.backgrounds;
       delete data.fontColors;
@@ -838,7 +896,7 @@ class SheetlogScript {
 
     // Clamp endRow to lastRow if it exceeds it
     endRow = Math.min(endRow, lastRow);
-    
+
     // If startRow is now greater than adjusted endRow, return empty
     if (startRow > endRow) {
       return [];
@@ -867,10 +925,10 @@ class SheetlogScript {
 
   handleRangeUpdate(sheet, params) {
     const { startRow, startCol, data } = params;
-    
+
     if (!Array.isArray(data) || !Array.isArray(data[0])) {
-      return this.error(400, "invalid_data", { 
-        message: "Data must be a 2D array" 
+      return this.error(400, "invalid_data", {
+        message: "Data must be a 2D array"
       });
     }
 
@@ -880,17 +938,17 @@ class SheetlogScript {
     try {
       // Single setValues() call is much more efficient than individual updates
       sheet.getRange(startRow, startCol, numRows, numCols).setValues(data);
-      
+
       // Only update "Date Modified" if the column exists
       const headers = this.getHeaders(sheet);
       if (headers[0] === "Date Modified") {
         const timestamp = new Date();
         const formattedDate = Utilities.formatDate(
-          timestamp, 
-          Session.getScriptTimeZone(), 
+          timestamp,
+          Session.getScriptTimeZone(),
           "MM/dd/yyyy HH:mm:ss"
         );
-        
+
         sheet.getRange(startRow, 1, numRows, 1)
           .setValue(formattedDate);
       }
@@ -903,7 +961,7 @@ class SheetlogScript {
         }
       });
     } catch (e) {
-      return this.error(500, "update_failed", { 
+      return this.error(500, "update_failed", {
         message: e.message,
         range: `${startRow},${startCol} to ${startRow + numRows},${startCol + numCols}`
       });
@@ -920,7 +978,7 @@ class SheetlogScript {
   handleGetSheets(spreadsheet) {
     const sheets = spreadsheet.getSheets();
     const spreadsheetId = spreadsheet.getId();
-    
+
     const sheetInfo = sheets.map(sheet => ({
       name: sheet.getName(),
       id: sheet.getSheetId(),
@@ -939,7 +997,7 @@ class SheetlogScript {
     try {
       const sheets = spreadsheet.getSheets();
       const spreadsheetId = spreadsheet.getId();
-      
+
       // Find the requested sheet
       const sheet = sheets.find(s => s.getName() === sheetName);
       if (!sheet) {
@@ -948,7 +1006,7 @@ class SheetlogScript {
 
       const sheetId = sheet.getSheetId();
       const csvUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=${sheetId}`;
-      
+
       // Fetch CSV content
       const response = UrlFetchApp.fetch(csvUrl, {
         headers: {
@@ -956,7 +1014,7 @@ class SheetlogScript {
         },
         muteHttpExceptions: true
       });
-      
+
       if (response.getResponseCode() !== 200) {
         return this.error(response.getResponseCode(), "csv_fetch_failed", {
           message: response.getContentText()
@@ -975,16 +1033,16 @@ class SheetlogScript {
   }
 
   handleGetRange(sheet, params) {
-    const { 
-      startRow, 
-      startCol, 
-      stopAtEmptyRow = false, 
+    const {
+      startRow,
+      startCol,
+      stopAtEmptyRow = false,
       stopAtEmptyColumn = false,
       skipEmptyRows = false,
       skipEmptyColumns = false,
       includeFormulas = false
     } = params;
-    
+
     const range = this.getRange(sheet, startRow, startCol, {
       stopAtEmptyRow,
       stopAtEmptyColumn,
@@ -1011,7 +1069,7 @@ class SheetlogScript {
 
     const lastRow = sheet.getLastRow();
     const lastCol = sheet.getLastColumn();
-    
+
     if (startRow > lastRow || startCol > lastCol) {
       return [];
     }
@@ -1026,8 +1084,8 @@ class SheetlogScript {
       endRow - startRow + 1,
       endCol - startCol + 1
     ).getValues();
-    
-    let rangeFormulas = includeFormulas ? 
+
+    let rangeFormulas = includeFormulas ?
       sheet.getRange(
         startRow,
         startCol,
@@ -1046,13 +1104,13 @@ class SheetlogScript {
           break;
         }
       }
-      
+
       if (columnsToKeep.length === 0) {
         return { values: [], range: null };
       }
 
       // Filter columns
-      rangeValues = rangeValues.map(row => 
+      rangeValues = rangeValues.map(row =>
         columnsToKeep.map(col => row[col])
       );
       endCol = startCol + columnsToKeep.length - 1;
@@ -1082,7 +1140,7 @@ class SheetlogScript {
     // Also process formulas if they exist
     if (rangeFormulas) {
       if (stopAtEmptyColumn || skipEmptyColumns) {
-        rangeFormulas = rangeFormulas.map(row => 
+        rangeFormulas = rangeFormulas.map(row =>
           columnsToKeep.map(col => row[col])
         );
       }
@@ -1108,20 +1166,20 @@ class SheetlogScript {
   // New function to find and get a data block
   handleGetDataBlock(sheet, params) {
     const { searchRange = {} } = params;
-    const { 
-      startRow = 1, 
-      startCol = 1, 
-      endRow = sheet.getLastRow(), 
-      endCol = sheet.getLastColumn() 
+    const {
+      startRow = 1,
+      startCol = 1,
+      endRow = sheet.getLastRow(),
+      endCol = sheet.getLastColumn()
     } = searchRange;
-    
+
     const block = this.findDataBlock(sheet, startRow, startCol, endRow, endCol);
     return this.data(200, block);
   }
 
   findDataBlock(sheet, startRow, startCol, endRow, endCol) {
     // Get the entire search range
-    const searchValues = sheet.getRange(startRow, startCol, 
+    const searchValues = sheet.getRange(startRow, startCol,
       endRow - startRow + 1, endCol - startCol + 1).getValues();
 
     // Find the first non-empty cell
@@ -1145,9 +1203,9 @@ class SheetlogScript {
     }
 
     // Get the range with the found starting point
-    return this.getRange(sheet, 
-      startRow + blockStartRow, 
-      startCol + blockStartCol, 
+    return this.getRange(sheet,
+      startRow + blockStartRow,
+      startCol + blockStartCol,
       {
         stopAtEmptyRow: true,
         stopAtEmptyColumn: true,
@@ -1175,10 +1233,6 @@ function error(status, code, details) {
 
 
 
-
-
-
-// Global Google Apps Script functions
 function doPost(request) {
   // Create new Sheetlog instance with default anonymous unsafe access
   const logger = loggers.doPostLogger;
@@ -1200,7 +1254,32 @@ function doPost(request) {
 }
 
 
+// Global Google Apps Script functions
 function doGet(e) {
+  // Test mode for FIND functionality
+  if (e.parameter.testFind) {
+    const testParams = {
+      sheet: "yawnxyz", // default to "yawnxyz" sheet
+      method: "FIND",
+      idColumn: "_id",
+      id: "1159555818",
+      returnAllMatches: false
+    };
+
+    const logger = loggers.doGetLogger;
+    return httpResponse(logger.handleRequest(testParams));
+  }
+
+  // Your existing test mode
+  if (e.parameter.test) {
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "ok",
+      mode: "test",
+      timestamp: new Date().toISOString(),
+      version: "1.0.5"
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+
   const logger = loggers.doGetLogger;
   try {
     return httpResponse(logger.handleRequest(e.parameter));
@@ -1209,6 +1288,7 @@ function doGet(e) {
     return httpResponse(error(500, 'internal_error', { message: error.message }));
   }
 }
+
 
 function onEdit(e) {
   if (!ENABLE_AUTO_TIMESTAMPS) return;

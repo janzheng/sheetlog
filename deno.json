@@ -1,12 +1,30 @@
 {
   "name": "@yawnxyz/sheetlog",
+  "version": "0.1.13",
   "description": "A simple logging library for Google Sheets",
+  "license": "Apache-2.0",
   "tasks": {
+    "test": "deno run --allow-net --allow-env --allow-read test.js",
     "play": "deno run --allow-read --allow-env --allow-write --allow-net ./main.js",
     "merge": "deno run --allow-read --allow-write --allow-env ../../_dev/merge_files.ts",
     "reload": "deno run --watch --allow-read --allow-env --allow-write --allow-net ./main.js",
-    "serve": "deno serve --watch --allow-read --allow-env --allow-write --allow-net ./main.js",
-    "test": "deno run --allow-read --allow-env --allow-write --allow-net ./test.js"
+    "serve": "deno serve --watch --allow-read --allow-env --allow-write --allow-net ./main.js"
   },
-  "exports": "./index.mjs"
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "publish": {
+    "include": [
+      "index.mjs",
+      "sheetlog.js",
+      "readme.md",
+      "deno.json"
+    ],
+    "exclude": [
+      "node_modules",
+      "demo",
+      "docs",
+      "test.js"
+    ]
+  }
 }

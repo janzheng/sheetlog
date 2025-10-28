@@ -1,9 +1,17 @@
 {
   "name": "@yawnxyz/sheetlog",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "a google sheets logging system",
+  "type": "module",
   "main": "index.mjs",
+  "exports": {
+    ".": {
+      "import": "./index.mjs",
+      "require": "./index.mjs"
+    }
+  },
   "scripts": {
+    "test": "node test.js",
     "commit": "git add .; git commit; git push origin main",
     "pub": "npm publish --access public",
     "demo": "node ./demo.mjs"
@@ -20,6 +28,15 @@
   ],
   "author": "Jan Zheng",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/janzheng/sheetlog"
+  },
+  "files": [
+    "index.mjs",
+    "sheetlog.js",
+    "readme.md"
+  ],
   "devDependencies": {
     "async-sema": "^3.1.1",
     "dotenv": "^16.3.1"

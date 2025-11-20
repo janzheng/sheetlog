@@ -35,7 +35,7 @@
 
 
 // Configuration flag for automatic timestamp updating
-const ENABLE_AUTO_TIMESTAMPS = true;
+const ENABLE_AUTO_TIMESTAMPS = false;
 
 
 class SheetlogScript {
@@ -97,18 +97,33 @@ class SheetlogScript {
       });
     });
 
-    newColumns.forEach(columnName => {
+    if (newColumns.length > 0) {
       const lastColumn = sheet.getLastColumn();
-      sheet.insertColumnAfter(lastColumn);
-      sheet.getRange(1, lastColumn + 1).setValue(columnName);
-    });
+      sheet.insertColumnsAfter(lastColumn, newColumns.length);
+      sheet.getRange(1, lastColumn + 1, 1, newColumns.length).setValues([newColumns]);
+    }
   }
 
   // Main Request Handler
   handleRequest(params) {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const lock = LockService.getScriptLock();
+    // Wait for up to 30 seconds for other processes to finish.
+    // Only needed for write operations, but simpler to wrap all or check method.
+    const method = (params["method"] || "GET").toUpperCase();
+    const isWrite = ["POST", "PUT", "DELETE", "UPSERT", "BATCH_UPSERT", "DYNAMIC_POST", "ADD_COLUMN", "EDIT_COLUMN", "REMOVE_COLUMN", "BULK_DELETE", "BATCH_UPDATE", "RANGE_UPDATE"].includes(method);
+    
+    if (isWrite) {
+      try {
+        lock.waitLock(30000);
+      } catch (e) {
+        return this.error(503, "server_busy", { message: "Could not obtain lock after 30 seconds." });
+      }
+    }
 
-    const sheetName = (params.sheet || "").toLowerCase();
+    try {
+      const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+      const sheetName = (params.sheet || "").toLowerCase();
     const _id = params.id == null ? null : +params.id;
     const method = (params["method"] || "GET").toUpperCase();
     const key = params.key || "";
@@ -157,6 +172,8 @@ class SheetlogScript {
         return this.handlePost(sheet, payload);
       case "UPSERT":
         return this.handleUpsert(sheet, idColumn, id, payload, { ...params });
+      case "BATCH_UPSERT":
+        return this.handleBatchUpsert(sheet, idColumn, payload, { ...params });
       case "DYNAMIC_POST":
         return this.handleDynamicPost(sheet, payload);
       case "PUT":
@@ -200,6 +217,11 @@ class SheetlogScript {
       default:
         return this.error(404, "unknown_method", { method: method });
     }
+  } finally {
+    if (isWrite) {
+      lock.releaseLock();
+    }
+  }
   }
 
   handleGetSingleRow(sheet, _id) {
@@ -249,9 +271,21 @@ class SheetlogScript {
       return this.data(200, []);
     }
 
-    const rows = sheet
+    const rangeValues = sheet
       .getRange(firstRowInPage, 1, lastRowInPage - firstRowInPage + 1, lastColumn)
-      .getValues()
+      .getValues();
+
+    // OPTIMIZATION: Return raw values if requested
+    if (params.raw) {
+       if (!isAsc) rangeValues.reverse();
+       return this.data(200, {
+         headers: headers,
+         values: rangeValues,
+         next: undefined // Pagination logic for raw mode? simplistic for now
+       });
+    }
+
+    const rows = rangeValues
       .map((item, index) => this.mapRowToObject(item, firstRowInPage + index, headers));
 
     if (!isAsc) {
@@ -288,27 +322,28 @@ class SheetlogScript {
     const headers = this.getHeaders(sheet);
     const currentDate = new Date();
     const hasDateModified = headers[0] === "Date Modified";
+    const timestamp = Utilities.formatDate(currentDate, Session.getScriptTimeZone(), "MM/dd/yyyy HH:mm:ss");
 
-    const processedPayload = payload.map(obj =>
-      Object.keys(obj).reduce((acc, key) => {
-        acc[key] = typeof obj[key] === 'object' ? JSON.stringify(obj[key]) : obj[key];
-        return acc;
-      }, {})
-    );
-
-    processedPayload.forEach(obj => {
+    // Construct rows for batch insertion
+    const rowsToAppend = [];
+    payload.forEach(obj => {
       const row = [];
-      // Only add timestamp if "Date Modified" column exists
       if (hasDateModified) {
-        row.push(Utilities.formatDate(currentDate, Session.getScriptTimeZone(), "MM/dd/yyyy HH:mm:ss"));
+        row.push(timestamp);
       }
       headers.forEach(header => {
         if (header !== "Date Modified") {
-          row.push(obj[header] || "");
+          const val = obj[header];
+          row.push((typeof val === 'object' ? JSON.stringify(val) : val) || "");
         }
       });
-      sheet.appendRow(row);
+      rowsToAppend.push(row);
     });
+
+    if (rowsToAppend.length > 0) {
+      sheet.getRange(sheet.getLastRow() + 1, 1, rowsToAppend.length, rowsToAppend[0].length)
+        .setValues(rowsToAppend);
+    }
 
     return this.data(201);
   }
@@ -329,6 +364,24 @@ class SheetlogScript {
         return array[i];
       }
     }
+  }
+
+  // Optimized helper for ID lookup
+  findRowIndexById(sheet, idColumnIndex, id) {
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return -1;
+    // Optimization: Read only ID column in one batch
+    const idColumnValues = sheet.getRange(2, idColumnIndex, lastRow - 1, 1).getValues();
+    const searchStr = id.toString();
+    
+    for (let i = 0; i < idColumnValues.length; i++) {
+      const val = idColumnValues[i][0];
+      // Check both strict equality and string equality
+      if (val == id || String(val) === searchStr) {
+        return i + 2; // +2 because data starts at row 2
+      }
+    }
+    return -1;
   }
 
   mapObjectToRow(object, headers) {
@@ -362,24 +415,17 @@ class SheetlogScript {
       return this.error(400, "id_column_not_found", { idColumn: idColumn });
     }
 
-    const lastRow = sheet.getLastRow();
-    let foundRow = null;
-    for (let i = 2; i <= lastRow; i++) {
-      const cellValue = sheet.getRange(i, idColumnIndex).getValue();
-      if (cellValue.toString() === _id.toString()) {
-        foundRow = i;
-        break;
-      }
-    }
-
+    // OPTIMIZATION: Use batch lookup
+    const foundRow = this.findRowIndexById(sheet, idColumnIndex, _id);
     const currentDate = new Date();
     const formattedDate = Utilities.formatDate(currentDate, Session.getScriptTimeZone(), "MM/dd/yyyy HH:mm:ss");
+    const hasDateModified = headers.length > 0 && headers[0] === "Date Modified";
 
-    if (foundRow) {
+    if (foundRow !== -1) {
       if (options.partialUpdate) {
-        // Update only specified columns
-        sheet.getRange(foundRow, 1).setValue(formattedDate); // Always update timestamp
-
+        if (hasDateModified) {
+          sheet.getRange(foundRow, 1).setValue(formattedDate);
+        }
         Object.entries(payload).forEach(([key, value]) => {
           const colIndex = headers.indexOf(key);
           if (colIndex !== -1) {
@@ -389,20 +435,120 @@ class SheetlogScript {
           }
         });
       } else {
-        // Original behavior: update entire row
-        const rowValues = this.mapObjectToRow(payload, headers.slice(1));
-        rowValues.unshift(formattedDate);
+        const rowValues = this.mapObjectToRow(payload, hasDateModified ? headers.slice(1) : headers);
+        if (hasDateModified) {
+          rowValues.unshift(formattedDate);
+        }
         sheet.getRange(foundRow, 1, 1, rowValues.length).setValues([rowValues]);
       }
       return this.data(200, { message: "Row updated" });
     } else {
-      // For new rows, always do a full insert
       this.addNewColumnsIfNeeded(sheet, [payload]);
-      const processedPayload = this.processPayloadForInsertion(payload, headers.slice(1));
-      processedPayload.unshift(formattedDate);
+      const updatedHeaders = this.getHeaders(sheet);
+      const hasDateModifiedAfterAdd = updatedHeaders.length > 0 && updatedHeaders[0] === "Date Modified";
+      const processedPayload = this.processPayloadForInsertion(payload, hasDateModifiedAfterAdd ? updatedHeaders.slice(1) : updatedHeaders);
+      if (hasDateModifiedAfterAdd) {
+        processedPayload.unshift(formattedDate);
+      }
       sheet.appendRow(processedPayload);
       return this.data(201, { message: "Row inserted" });
     }
+  }
+
+  handleBatchUpsert(sheet, idColumn, payload, options = { partialUpdate: false }) {
+    if (!Array.isArray(payload)) return this.error(400, "payload_must_be_array", {});
+    
+    this.addNewColumnsIfNeeded(sheet, payload);
+    const headers = this.getHeaders(sheet);
+    const idColumnIndex = headers.indexOf(idColumn) + 1;
+    
+    if (idColumnIndex < 1) {
+      return this.error(400, "id_column_not_found", { idColumn: idColumn });
+    }
+
+    const lastRow = sheet.getLastRow();
+    const idMap = new Map(); 
+    if (lastRow >= 2) {
+       const idValues = sheet.getRange(2, idColumnIndex, lastRow - 1, 1).getValues();
+       for(let i=0; i<idValues.length; i++) {
+         const val = idValues[i][0];
+         if(val !== "" && val != null) {
+            idMap.set(String(val), i + 2);
+         }
+       }
+    }
+
+    const currentDate = new Date();
+    const formattedDate = Utilities.formatDate(currentDate, Session.getScriptTimeZone(), "MM/dd/yyyy HH:mm:ss");
+    
+    const inserts = [];
+    const updates = [];
+
+    payload.forEach(item => {
+       const id = item[idColumn];
+       if (id == null) return;
+       
+       if (idMap.has(String(id))) {
+         updates.push({ row: idMap.get(String(id)), data: item });
+       } else {
+         inserts.push(item);
+       }
+    });
+
+    if (inserts.length > 0) {
+       const rowsToAppend = [];
+       const hasDateModified = headers[0] === "Date Modified";
+       inserts.forEach(obj => {
+          const row = [];
+          if (hasDateModified) {
+             row.push(formattedDate);
+          }
+          headers.forEach(header => {
+             if (header !== "Date Modified") {
+               const val = obj[header];
+               row.push((typeof val === 'object' ? JSON.stringify(val) : val) || "");
+             }
+          });
+          rowsToAppend.push(row);
+       });
+       
+       if (rowsToAppend.length > 0) {
+         sheet.getRange(sheet.getLastRow() + 1, 1, rowsToAppend.length, rowsToAppend[0].length)
+              .setValues(rowsToAppend);
+       }
+    }
+
+    if (updates.length > 0) {
+       const hasDateModified = headers.length > 0 && headers[0] === "Date Modified";
+       if (!options.partialUpdate) {
+         updates.forEach(update => {
+            const rowValues = this.mapObjectToRow(update.data, hasDateModified ? headers.slice(1) : headers);
+            if (hasDateModified) {
+              rowValues.unshift(formattedDate);
+            }
+            sheet.getRange(update.row, 1, 1, rowValues.length).setValues([rowValues]);
+         });
+       } else {
+         updates.forEach(update => {
+            if (hasDateModified) {
+              sheet.getRange(update.row, 1).setValue(formattedDate);
+            }
+            Object.entries(update.data).forEach(([key, value]) => {
+              const colIndex = headers.indexOf(key);
+              if (colIndex !== -1) {
+                 sheet.getRange(update.row, colIndex + 1).setValue(
+                   typeof value === 'object' ? JSON.stringify(value) : value
+                 );
+              }
+            });
+         });
+       }
+    }
+
+    return this.data(200, { 
+      inserted: inserts.length, 
+      updated: updates.length 
+    });
   }
 
   processPayloadForInsertion(payload, headers) {
@@ -554,9 +700,11 @@ class SheetlogScript {
       return this.error(400, "invalid_ids", { message: "ids must be an array" });
     }
 
-    ids.forEach(_id => {
-      sheet.getRange(_id, 1, 1, sheet.getLastColumn()).clearContent();
-    });
+    // Create A1 notations for full rows (e.g., "2:2")
+    const ranges = ids.map(id => `${id}:${id}`);
+    if (ranges.length > 0) {
+      sheet.getRangeList(ranges).clearContent();
+    }
 
     return this.data(200, { deleted: ids.length });
   }
@@ -757,7 +905,12 @@ class SheetlogScript {
     return result;
   }
 
-  getAllCells(sheet) {
+  getAllCells(sheet, options = {}) {
+    const { 
+      includeFormulas = false, 
+      includeFormatting = false 
+    } = options;
+    
     // Gets all data in the sheet in one batch operation
     const dataRange = sheet.getDataRange();
     const result = {
@@ -766,49 +919,33 @@ class SheetlogScript {
       lastRow: sheet.getLastRow()
     };
 
-    // Add formulas by default since this is a "get all" operation
-    result.formulas = dataRange.getFormulas();
+    if (includeFormulas) {
+      result.formulas = dataRange.getFormulas();
+    }
 
-    // Add formatting information by default
-    result.backgrounds = dataRange.getBackgrounds();
-    result.fontColors = dataRange.getFontColors();
-    result.numberFormats = dataRange.getNumberFormats();
-
-    // Add additional useful formatting information
-    result.fontFamilies = dataRange.getFontFamilies();
-    result.fontSizes = dataRange.getFontSizes();
-    result.fontStyles = dataRange.getFontStyles();
-    result.horizontalAlignments = dataRange.getHorizontalAlignments();
-    result.verticalAlignments = dataRange.getVerticalAlignments();
-    result.wraps = dataRange.getWraps();
+    if (includeFormatting) {
+      result.backgrounds = dataRange.getBackgrounds();
+      result.fontColors = dataRange.getFontColors();
+      result.numberFormats = dataRange.getNumberFormats();
+      result.fontFamilies = dataRange.getFontFamilies();
+      result.fontSizes = dataRange.getFontSizes();
+      result.fontStyles = dataRange.getFontStyles();
+      result.horizontalAlignments = dataRange.getHorizontalAlignments();
+      result.verticalAlignments = dataRange.getVerticalAlignments();
+      result.wraps = dataRange.getWraps();
+    }
 
     return result;
   }
 
   handleGetAllCells(sheet, params = {}) {
     const {
-      includeFormulas = true,  // true by default for getAllCells
-      includeFormatting = true // true by default for getAllCells
+      includeFormulas = false, // Default to false for speed
+      includeFormatting = false // Default to false for speed
     } = params;
 
-    const data = this.getAllCells(sheet);
-
-    // Remove unwanted properties based on parameters
-    if (!includeFormulas) {
-      delete data.formulas;
-    }
-
-    if (!includeFormatting) {
-      delete data.backgrounds;
-      delete data.fontColors;
-      delete data.numberFormats;
-      delete data.fontFamilies;
-      delete data.fontSizes;
-      delete data.fontStyles;
-      delete data.horizontalAlignments;
-      delete data.verticalAlignments;
-      delete data.wraps;
-    }
+    // Pass params to getAllCells to avoid fetching unnecessary data
+    const data = this.getAllCells(sheet, { includeFormulas, includeFormatting });
 
     return this.data(200, data);
   }
@@ -1238,7 +1375,27 @@ function doPost(request) {
   const logger = loggers.doPostLogger;
 
   try {
-    const requestData = JSON.parse(request.postData.contents);
+    let requestData;
+    
+    // Try to parse as JSON from postData.contents first
+    if (request.postData && request.postData.contents) {
+      try {
+        requestData = JSON.parse(request.postData.contents);
+      } catch (e) {
+        // If that fails, maybe it's form-encoded data with a 'payload' parameter
+        if (request.parameter && request.parameter.payload) {
+          requestData = JSON.parse(request.parameter.payload);
+        } else {
+          throw e;
+        }
+      }
+    } else if (request.parameter && request.parameter.payload) {
+      // Try form parameter
+      requestData = JSON.parse(request.parameter.payload);
+    } else {
+      throw new Error("No valid payload found");
+    }
+    
     if (Array.isArray(requestData)) {
       return httpResponse(requestData.map(params => logger.handleRequest(params)));
     }
@@ -1246,8 +1403,10 @@ function doPost(request) {
   } catch (e) {
     return httpResponse(
       error(400, "invalid_post_payload", {
-        payload: request.postData.contents,
-        type: request.postData.type
+        message: e.message,
+        payload: request.postData ? request.postData.contents : null,
+        parameter: request.parameter ? request.parameter.payload : null,
+        type: request.postData ? request.postData.type : null
       })
     );
   }

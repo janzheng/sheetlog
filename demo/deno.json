@@ -1,12 +1,12 @@
 {
   "name": "@yawnxyz/sheetlogdemo",
   "description": "A simple demo of sheetlog",
+  "imports": {
+    "hono": "npm:hono"
+  },
   "tasks": {
-    "play": "deno run --allow-read --allow-env --allow-write --allow-net ./main.js",
-    "merge": "deno run --allow-read --allow-write --allow-env ../../_dev/merge_files.ts",
-    "reload": "deno run --watch --allow-read --allow-env --allow-write --allow-net ./main.js",
-    "serve": "deno serve --watch --allow-read --allow-env --allow-write --allow-net ./main.js",
-    "test": "deno run --allow-read --allow-env --allow-write --allow-net ./test.js",
+    "dev": "deno run --watch --allow-read --allow-env --allow-net ./main.js",
+    "serve": "deno serve --watch --allow-read --allow-env --allow-net ./main.js",
     "prod": "deployctl deploy --prod --project=sheetlog"
   },
   "exports": "./main.js",

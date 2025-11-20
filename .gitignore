@@ -22,6 +22,20 @@ docs/yarn-error.log*
 docs/pnpm-debug.log*
 
 
+cloudflare/.wrangler/
+cloudflare/node_modules/
+cloudflare/site/.astro/
+cloudflare/site/dist/
+cloudflare/site/node_modules/
+cloudflare/site/yarn.lock
+cloudflare/site/package-lock.json
+cloudflare/site/package.json
+cloudflare/site/readme.md
+cloudflare/site/test.js
+cloudflare/site/test.js
+
+
+
 # environment variables
 docs/.env
 docs/.env.production

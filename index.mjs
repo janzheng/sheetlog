@@ -70,13 +70,21 @@ class Sheetlog {
       });
 
       if (!response.ok) {
-        console.error("fetch log error", response);
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const text = await response.text().catch(() => "No response body");
+        console.error("Sheetlog fetch error:", response.status, response.statusText, text);
+        throw new Error(`HTTP error! status: ${response.status} - ${text.substring(0, 100)}...`);
       }
 
       try {
-        data = await response.json();
+        const text = await response.text();
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          console.warn("Sheetlog: Response was not JSON", text.substring(0, 200));
+          data = { error: "invalid_json", raw: text };
+        }
       } catch (e) { }
+      
       if (this.logPayload) {
         console.log(bodyObject);
       }
@@ -89,6 +97,10 @@ class Sheetlog {
   // Wrapper methods for each case in sheetlog.js
   async get(id, options = {}) {
     return this.log({}, { ...options, method: "GET", id });
+  }
+  
+  async list(options = {}) {
+    return this.log({}, { ...options, method: "GET" });
   }
 
   async post(payload, options = {}) {
@@ -106,6 +118,10 @@ class Sheetlog {
 
   async upsert(idColumn, id, payload, options = {}) {
     return this.log(payload, { ...options, method: "UPSERT", idColumn, id });
+  }
+
+  async batchUpsert(idColumn, payload, options = {}) {
+    return this.log(payload, { ...options, method: "BATCH_UPSERT", idColumn });
   }
 
   async put(id, payload, options = {}) {
@@ -284,8 +300,19 @@ const SheetlogSchema = {
       required: ["id"]
     },
     output: {
-      type: "object",
-      additionalProperties: true
+      oneOf: [
+        {
+          type: "object",
+          properties: {
+             headers: { type: "array" },
+             values: { type: "array" }
+          }
+        },
+        {
+          type: "object",
+          additionalProperties: true
+        }
+      ]
     }
   },
   paginatedGet: {
@@ -477,6 +504,36 @@ const SheetlogSchema = {
         }
       },
       required: ["success", "action"]
+    }
+  },
+  batchUpsert: {
+    input: {
+      type: "object",
+      properties: {
+        idColumn: { type: "string" },
+        payload: {
+          type: "array",
+          items: { type: "object" }
+        },
+        options: {
+          type: "object",
+          properties: {
+            sheet: { type: "string" },
+            sheetUrl: { type: "string" },
+            partialUpdate: { type: "boolean", default: false }
+          },
+          additionalProperties: false
+        }
+      },
+      required: ["idColumn", "payload"]
+    },
+    output: {
+      type: "object",
+      properties: {
+        inserted: { type: "number" },
+        updated: { type: "number" }
+      },
+      required: ["inserted", "updated"]
     }
   },
   dynamicPost: {

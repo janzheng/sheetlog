@@ -3,12 +3,16 @@
   "version": "0.1.13",
   "description": "A simple logging library for Google Sheets",
   "license": "Apache-2.0",
+  "imports": {
+    "hono": "npm:hono"
+  },
   "tasks": {
     "test": "deno run --allow-net --allow-env --allow-read test.js",
-    "play": "deno run --allow-read --allow-env --allow-write --allow-net ./main.js",
-    "merge": "deno run --allow-read --allow-write --allow-env ../../_dev/merge_files.ts",
-    "reload": "deno run --watch --allow-read --allow-env --allow-write --allow-net ./main.js",
-    "serve": "deno serve --watch --allow-read --allow-env --allow-write --allow-net ./main.js"
+    "test:movies": "deno run --allow-net --allow-env --allow-read tests/movies-test.js",
+    "test:movies:full": "deno run --allow-net --allow-env --allow-read tests/movies-full-test.js",
+    "demo": "deno run --allow-read --allow-env --allow-net demo/main.js",
+    "demo:watch": "deno run --watch --allow-read --allow-env --allow-net demo/main.js",
+    "demo:serve": "deno serve --port 8282 --watch --allow-read --allow-env --allow-net demo/main.js"
   },
   "exports": {
     ".": "./index.mjs"

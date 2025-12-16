@@ -103,6 +103,10 @@ class Sheetlog {
     return this.log({}, { ...options, method: "GET" });
   }
 
+  async getLast(limit = 10, options = {}) {
+    return this.log({}, { ...options, method: "GET_LAST", limit });
+  }
+
   async post(payload, options = {}) {
     return this.log(payload, { ...options, method: "POST" });
   }
@@ -309,8 +313,8 @@ const SheetlogSchema = {
           }
         },
         {
-          type: "object",
-          additionalProperties: true
+      type: "object",
+      additionalProperties: true
         }
       ]
     }

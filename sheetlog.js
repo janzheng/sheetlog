@@ -168,6 +168,8 @@ class SheetlogScript {
         return _id != null
           ? this.handleGetSingleRow(sheet, _id)
           : this.handleGetMultipleRows(sheet, params);
+      case "GET_LAST":
+        return this.handleGetLastRows(sheet, params);
       case "POST":
         return this.handlePost(sheet, payload);
       case "UPSERT":
@@ -296,6 +298,50 @@ class SheetlogScript {
     if (next < firstRow || next > lastRow) next = undefined;
 
     return this.data(200, rows.filter(this.isTruthy), { next: next });
+  }
+
+  // FAST: Get last N rows from the bottom of the sheet
+  handleGetLastRows(sheet, params) {
+    const limit = params.limit != null ? +params.limit : 10;
+    const raw = params.raw || false;
+    
+    const lastRow = sheet.getLastRow();
+    const lastColumn = sheet.getLastColumn();
+    const headers = this.getHeaders(sheet);
+    
+    if (lastRow < 2) {
+      return this.data(200, raw ? { headers: headers, values: [] } : []);
+    }
+    
+    // Calculate starting row (don't go before row 2 which is first data row)
+    const startRow = Math.max(2, lastRow - limit + 1);
+    const numRows = lastRow - startRow + 1;
+    
+    // Single API call to get the last N rows
+    const rangeValues = sheet
+      .getRange(startRow, 1, numRows, lastColumn)
+      .getValues();
+    
+    if (raw) {
+      return this.data(200, {
+        headers: headers,
+        values: rangeValues,
+        startRow: startRow,
+        endRow: lastRow,
+        total: lastRow - 1 // Total data rows (excluding header)
+      });
+    }
+    
+    // Map to objects with _id
+    const rows = rangeValues
+      .map((item, index) => this.mapRowToObject(item, startRow + index, headers))
+      .filter(this.isTruthy);
+    
+    return this.data(200, rows, {
+      startRow: startRow,
+      endRow: lastRow,
+      total: lastRow - 1
+    });
   }
 
   handlePost(sheet, payload) {

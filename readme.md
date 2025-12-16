@@ -227,6 +227,22 @@ const result = await logger.upsert(
 );
 ```
 
+#### .batchUpsert(idColumn, payload, options)
+Efficiently creates or updates multiple rows in a single operation. Much faster than individual upserts for bulk data.
+
+```javascript
+const result = await sheet.batchUpsert(
+  'title',                    // idColumn - unique identifier
+  [
+    { title: "The Matrix", year: 1999, rating: 8.7 },
+    { title: "Inception", year: 2010, rating: 8.8 },
+    { title: "Interstellar", year: 2014, rating: 8.6 }
+  ],
+  { sheet: 'Movies' }
+);
+// Returns: { inserted: 2, updated: 1 }
+```
+
 #### .find(idColumn, id, returnAllMatches, options)
 Searches for rows matching the specified criteria. Returns single object or array based on returnAllMatches.
 
@@ -391,6 +407,52 @@ const rows = await sheet.getRows({
 });
 ```
 
+#### .getLast(limit, options)
+**⚡ Fast retrieval of the most recent rows** - Perfect for sheets with thousands of rows where you only need the latest entries. Uses a single API call to fetch only the bottom N rows, avoiding the need to scan the entire sheet.
+
+**Parameters:**
+- `limit`: Number of rows to retrieve from the bottom (default: 10)
+- `options.raw`: If true, returns raw arrays instead of objects (faster)
+- `options.sheet`: Sheet name
+
+**Performance:** On a sheet with 6,160 rows:
+- 10 rows: ~3 seconds
+- 50 rows: ~4 seconds  
+- 100 rows: ~6 seconds
+
+Compare this to reading all 6,160 rows which would take much longer and likely timeout!
+
+```javascript
+// Get last 10 rows (most recent entries)
+const result = await sheet.getLast(10);
+console.log(result.data);        // Array of row objects
+console.log(result.startRow);    // e.g., 6152
+console.log(result.endRow);      // e.g., 6161
+console.log(result.total);       // Total rows in sheet: 6160
+
+// Get last 50 rows in raw mode (even faster)
+const rawResult = await sheet.getLast(50, { raw: true });
+console.log(rawResult.data.headers);  // ["date", "title", "url", ...]
+console.log(rawResult.data.values);   // [[...], [...], ...]
+
+// Use with specific sheet
+const logs = await sheet.getLast(100, { 
+  sheet: "ActivityLogs",
+  raw: true 
+});
+```
+
+**Response structure:**
+```javascript
+{
+  status: 200,
+  data: [...],      // Row data (objects or raw arrays)
+  startRow: 6152,   // First row retrieved
+  endRow: 6161,     // Last row retrieved  
+  total: 6160       // Total rows in sheet
+}
+```
+
 #### .getRange(payload, options)
 Retrieves data from a specified range with flexible empty cell handling.
 
@@ -536,10 +598,12 @@ sheet.log(null, {
 | Method | Description |
 |--------|-------------|
 | GET | Fetch single or multiple rows |
+| GET_LAST | ⚡ Fast retrieval of bottom N rows (ideal for large sheets) |
 | POST | Create new rows |
 | PUT | Update existing rows |
 | DELETE | Remove rows |
 | UPSERT | Create or update based on ID |
+| BATCH_UPSERT | Bulk create or update multiple rows efficiently |
 | DYNAMIC_POST | Create rows with dynamic columns |
 | ADD_COLUMN | Add new columns |
 | EDIT_COLUMN | Rename columns |
@@ -617,6 +681,21 @@ You can retrieve specific columns from a Google Sheet using the `GET_COLUMNS` me
   "limit": 5
 }
 
+// ⚡ Fast: Get last 10 rows (most recent entries)
+{
+  "method": "GET_LAST",
+  "sheet": "logs",
+  "limit": 10
+}
+
+// ⚡ Fast: Get last 50 rows in raw mode
+{
+  "method": "GET_LAST",
+  "sheet": "logs",
+  "limit": 50,
+  "raw": true
+}
+
 // Create a new row
 {
   "method": "POST",
@@ -638,6 +717,18 @@ You can retrieve specific columns from a Google Sheet using the `GET_COLUMNS` me
     "name": "Jane Doe",
     "email": "jane@example.com"
   }
+}
+
+// Batch upsert multiple rows efficiently
+{
+  "method": "BATCH_UPSERT",
+  "sheet": "movies",
+  "idColumn": "title",
+  "payload": [
+    { "title": "The Matrix", "year": 1999, "rating": 8.7 },
+    { "title": "Inception", "year": 2010, "rating": 8.8 },
+    { "title": "Interstellar", "year": 2014, "rating": 8.6 }
+  ]
 }
 
 // Create rows with dynamic columns

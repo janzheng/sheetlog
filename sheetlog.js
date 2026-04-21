@@ -181,7 +181,7 @@ class SheetlogScript {
       case "PUT":
         return this.handlePut(sheet, _id, payload);
       case "DELETE":
-        return this.handleDelete(sheet, _id);
+        return this.handleDelete(sheet, _id, params);
       case "ADD_COLUMN":
         return this.handleAddColumn(sheet, params.columnName);
       case "EDIT_COLUMN":
@@ -344,8 +344,26 @@ class SheetlogScript {
     });
   }
 
+  // Generate a ~10-digit numeric id (matches bookmarklet / client convention).
+  // Used to backfill the _id column on POST/DYNAMIC_POST when the caller
+  // omits it, so appended rows are always queryable via `FIND idColumn=_id`.
+  generateId() {
+    return Math.floor(Math.random() * 4294967296);
+  }
+
+  // Mutate payload in place to ensure _id exists if the _id column is
+  // present in the sheet. Returns the (new or existing) _id value.
+  ensureId(payload, headers) {
+    if (headers.indexOf("_id") === -1) return null;
+    if (payload._id != null && payload._id !== "") return payload._id;
+    const newId = this.generateId();
+    payload._id = newId;
+    return newId;
+  }
+
   handlePost(sheet, payload) {
     const headers = this.getHeaders(sheet);
+    const generatedId = this.ensureId(payload, headers);
     let row = this.mapObjectToRow(payload, headers);
 
     // Only add timestamp if "Date Modified" column exists
@@ -356,7 +374,7 @@ class SheetlogScript {
     }
 
     sheet.appendRow(row);
-    return this.data(201);
+    return this.data(201, generatedId != null ? { message: "Row inserted", _id: generatedId } : { message: "Row inserted" });
   }
 
   handleDynamicPost(sheet, payload) {
@@ -366,6 +384,10 @@ class SheetlogScript {
 
     this.addNewColumnsIfNeeded(sheet, payload);
     const headers = this.getHeaders(sheet);
+    // Backfill _id on every row that omits it, so callers don't need to
+    // generate ids client-side. The generated ids are returned in the
+    // response body for tracking.
+    const insertedIds = payload.map(obj => this.ensureId(obj, headers));
     const currentDate = new Date();
     const hasDateModified = headers[0] === "Date Modified";
     const timestamp = Utilities.formatDate(currentDate, Session.getScriptTimeZone(), "MM/dd/yyyy HH:mm:ss");
@@ -391,7 +413,13 @@ class SheetlogScript {
         .setValues(rowsToAppend);
     }
 
-    return this.data(201);
+    const anyGenerated = insertedIds.some(id => id != null);
+    return this.data(
+      201,
+      anyGenerated
+        ? { message: "Rows inserted", count: rowsToAppend.length, _ids: insertedIds }
+        : { message: "Rows inserted", count: rowsToAppend.length },
+    );
   }
 
   // Utility methods
@@ -413,17 +441,20 @@ class SheetlogScript {
   }
 
   // Optimized helper for ID lookup
+  // IMPORTANT: Search BACKWARDS to match handleFind behavior (most recent entry first)
   findRowIndexById(sheet, idColumnIndex, id) {
     const lastRow = sheet.getLastRow();
     if (lastRow < 2) return -1;
     // Optimization: Read only ID column in one batch
     const idColumnValues = sheet.getRange(2, idColumnIndex, lastRow - 1, 1).getValues();
     const searchStr = id.toString();
+    const searchNum = Number(id);
     
-    for (let i = 0; i < idColumnValues.length; i++) {
+    // Search BACKWARDS - from last row to first (matches handleFind behavior)
+    for (let i = idColumnValues.length - 1; i >= 0; i--) {
       const val = idColumnValues[i][0];
       // Check both strict equality and string equality
-      if (val == id || String(val) === searchStr) {
+      if (val == id || val === searchNum || String(val) === searchStr) {
         return i + 2; // +2 because data starts at row 2
       }
     }
@@ -467,17 +498,47 @@ class SheetlogScript {
     const formattedDate = Utilities.formatDate(currentDate, Session.getScriptTimeZone(), "MM/dd/yyyy HH:mm:ss");
     const hasDateModified = headers.length > 0 && headers[0] === "Date Modified";
 
+    // DEBUG: Log what we're working with
+    console.log("handleUpsert DEBUG:", {
+      idColumn: idColumn,
+      _id: _id,
+      foundRow: foundRow,
+      headers: headers,
+      payloadKeys: Object.keys(payload),
+      partialUpdate: options.partialUpdate
+    });
+
     if (foundRow !== -1) {
       if (options.partialUpdate) {
         if (hasDateModified) {
           sheet.getRange(foundRow, 1).setValue(formattedDate);
         }
+        const updatedFields = [];
         Object.entries(payload).forEach(([key, value]) => {
           const colIndex = headers.indexOf(key);
+          console.log("  Checking field:", key, "colIndex:", colIndex);
           if (colIndex !== -1) {
             sheet.getRange(foundRow, colIndex + 1).setValue(
               typeof value === 'object' ? JSON.stringify(value) : value
             );
+            updatedFields.push(key);
+          } else {
+            console.log("  ⚠️ Column not found for key:", key);
+          }
+        });
+        console.log("Updated fields:", updatedFields);
+        
+        // FORCE flush writes to sheet before returning
+        SpreadsheetApp.flush();
+        
+        // Return debug info
+        return this.data(200, { 
+          message: "Row updated", 
+          debug: {
+            foundRow: foundRow,
+            headers: headers,
+            payloadKeys: Object.keys(payload),
+            updatedFields: updatedFields
           }
         });
       } else {
@@ -619,8 +680,24 @@ class SheetlogScript {
     return this.data(201);
   }
 
-  handleDelete(sheet, _id) {
-    sheet.getRange("$" + _id + ":" + "$" + _id).setValue("");
+  // handleDelete accepts a row-number as `_id` by default (A1 notation).
+  // When `params.byId === true`, treat the value as an `_id` column lookup
+  // and resolve to a row number first (caller-friendly mode).
+  handleDelete(sheet, _id, params = {}) {
+    let rowNum = _id;
+    if (params && params.byId) {
+      const headers = this.getHeaders(sheet);
+      const idColumnIndex = headers.indexOf("_id") + 1;
+      if (idColumnIndex < 1) {
+        return this.error(400, "id_column_not_found", { idColumn: "_id" });
+      }
+      const found = this.findRowIndexById(sheet, idColumnIndex, _id);
+      if (found === -1) {
+        return this.error(404, "no_matches_found", { _id: _id });
+      }
+      rowNum = found;
+    }
+    sheet.getRange("$" + rowNum + ":" + "$" + rowNum).setValue("");
     return this.data(204);
   }
 
@@ -740,19 +817,41 @@ class SheetlogScript {
     }
   }
 
+  // handleBulkDelete defaults to treating `ids` as row-numbers (A1 notation).
+  // When `params.byId === true`, treat each entry as an `_id` column lookup
+  // and resolve to row numbers first. Unresolved ids are returned in
+  // `notFound` so the caller can retry / reconcile.
   handleBulkDelete(sheet, params) {
     const { ids } = params;
     if (!Array.isArray(ids)) {
       return this.error(400, "invalid_ids", { message: "ids must be an array" });
     }
 
+    let rowNums = ids;
+    const notFound = [];
+    if (params && params.byId) {
+      const headers = this.getHeaders(sheet);
+      const idColumnIndex = headers.indexOf("_id") + 1;
+      if (idColumnIndex < 1) {
+        return this.error(400, "id_column_not_found", { idColumn: "_id" });
+      }
+      rowNums = [];
+      ids.forEach(id => {
+        const found = this.findRowIndexById(sheet, idColumnIndex, id);
+        if (found === -1) notFound.push(id);
+        else rowNums.push(found);
+      });
+    }
+
     // Create A1 notations for full rows (e.g., "2:2")
-    const ranges = ids.map(id => `${id}:${id}`);
+    const ranges = rowNums.map(r => `${r}:${r}`);
     if (ranges.length > 0) {
       sheet.getRangeList(ranges).clearContent();
     }
 
-    return this.data(200, { deleted: ids.length });
+    const body = { deleted: rowNums.length };
+    if (notFound.length > 0) body.notFound = notFound;
+    return this.data(200, body);
   }
 
   handlePaginatedGet(sheet, params) {

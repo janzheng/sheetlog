@@ -104,7 +104,8 @@ class Sheetlog {
   }
 
   async getLast(limit = 10, options = {}) {
-    return this.log({}, { ...options, method: "GET_LAST", limit });
+    const { raw = false, ...rest } = options;
+    return this.log({}, { ...rest, method: "GET_LAST", limit, raw });
   }
 
   async post(payload, options = {}) {
